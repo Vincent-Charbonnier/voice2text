@@ -7,10 +7,8 @@ import requests
 import gradio as gr
 import inspect
 import subprocess
-import time
 from datetime import datetime, timedelta
 from typing import Optional
-from requests.exceptions import RequestException, SSLError, ConnectionError, Timeout
 
 # -------------------------
 # Config (env) - defaults can be empty; UI will let you set them at runtime
@@ -19,11 +17,10 @@ HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LOCAL_WHISPER_URL = os.getenv("LOCAL_WHISPER_URL", "")
 HF_WHISPER_MODEL = os.getenv("HF_WHISPER_MODEL", "openai/whisper-large-v3")
-OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "openai/gpt-oss-120b")
+OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini")
 
 # Path to store model config (persisted JSON)
-_raw_model_config_path = os.getenv("MODEL_CONFIG_PATH", "/app/model_settings.json")
-MODEL_CONFIG_PATH = os.path.abspath(_raw_model_config_path)
+MODEL_CONFIG_PATH = os.getenv("MODEL_CONFIG_PATH", "/app/model_settings.json")
 
 # Runtime-configurable (via the Model Config tab)
 WHISPER_API_URL: str = ""
@@ -93,61 +90,27 @@ def encode_file_b64(path):
 # -------------------------
 # Persistency: load/save JSON settings
 # -------------------------
-def load_model_settings(path: str = None) -> dict:
+def load_model_settings(path: str = MODEL_CONFIG_PATH) -> dict:
     global WHISPER_API_URL, WHISPER_API_TOKEN, WHISPER_MODEL_NAME
     global SUMMARIZER_API_URL, SUMMARIZER_API_TOKEN, SUMMARIZER_MODEL_NAME
 
-    path = path or MODEL_CONFIG_PATH
-    try:
-        path = os.path.abspath(path)
-    except Exception:
-        pass
-
     if not os.path.exists(path):
-        print(f"[model-settings] file not found at: {path}")
         return {}
-
-    try:
-        st = os.stat(path)
-    except Exception as e:
-        print(f"[model-settings] cannot stat file {path}: {e}")
-        return {}
-
     try:
         with open(path, "r", encoding="utf-8") as f:
             conf = json.load(f)
-    except PermissionError:
-        print(f"[model-settings] permission denied reading {path}.")
-        return {}
+        WHISPER_API_URL = conf.get("WHISPER_API_URL", WHISPER_API_URL or "")
+        WHISPER_API_TOKEN = conf.get("WHISPER_API_TOKEN", WHISPER_API_TOKEN or "")
+        WHISPER_MODEL_NAME = conf.get("WHISPER_MODEL_NAME", WHISPER_MODEL_NAME or "")
+        SUMMARIZER_API_URL = conf.get("SUMMARIZER_API_URL", SUMMARIZER_API_URL or "")
+        SUMMARIZER_API_TOKEN = conf.get("SUMMARIZER_API_TOKEN", SUMMARIZER_API_TOKEN or "")
+        SUMMARIZER_MODEL_NAME = conf.get("SUMMARIZER_MODEL_NAME", SUMMARIZER_MODEL_NAME or "")
+        return conf
     except Exception as e:
-        print(f"[model-settings] failed to parse JSON from {path}: {e}")
+        print(f"Failed to load model settings from {path}: {e}")
         return {}
 
-    # Only map values when present (so unset keys do not clobber defaults)
-    if "WHISPER_API_URL" in conf and conf.get("WHISPER_API_URL"):
-        WHISPER_API_URL = conf.get("WHISPER_API_URL")
-    if "WHISPER_API_TOKEN" in conf and conf.get("WHISPER_API_TOKEN"):
-        WHISPER_API_TOKEN = conf.get("WHISPER_API_TOKEN")
-    if "WHISPER_MODEL_NAME" in conf and conf.get("WHISPER_MODEL_NAME"):
-        WHISPER_MODEL_NAME = conf.get("WHISPER_MODEL_NAME")
-
-    if "SUMMARIZER_API_URL" in conf and conf.get("SUMMARIZER_API_URL"):
-        SUMMARIZER_API_URL = conf.get("SUMMARIZER_API_URL")
-    if "SUMMARIZER_API_TOKEN" in conf and conf.get("SUMMARIZER_API_TOKEN"):
-        SUMMARIZER_API_TOKEN = conf.get("SUMMARIZER_API_TOKEN")
-    if "SUMMARIZER_MODEL_NAME" in conf and conf.get("SUMMARIZER_MODEL_NAME"):
-        SUMMARIZER_MODEL_NAME = conf.get("SUMMARIZER_MODEL_NAME")
-
-    print(f"[model-settings] loaded settings from {path}: keys={list(conf.keys())}")
-    return conf
-
-def save_model_settings(path: str = None) -> bool:
-    path = (path or MODEL_CONFIG_PATH)
-    try:
-        path = os.path.abspath(path)
-    except Exception:
-        pass
-
+def save_model_settings(path: str = MODEL_CONFIG_PATH) -> bool:
     conf = {
         "WHISPER_API_URL": WHISPER_API_URL or "",
         "WHISPER_API_TOKEN": WHISPER_API_TOKEN or "",
@@ -157,14 +120,12 @@ def save_model_settings(path: str = None) -> bool:
         "SUMMARIZER_MODEL_NAME": SUMMARIZER_MODEL_NAME or "",
     }
     try:
-        parent = os.path.dirname(path) or "/app"
-        os.makedirs(parent, exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(conf, f, indent=2)
-        print(f"[model-settings] saved settings to {path}")
         return True
     except Exception as e:
-        print(f"[model-settings] Failed to save model settings to {path}: {e}")
+        print(f"Failed to save model settings to {path}: {e}")
         return False
 
 # load saved settings at startup
@@ -281,7 +242,6 @@ def clear_model_settings():
 
 # -------------------------
 # Transcription helpers + chunked transcription
-# (unchanged from your version)
 # -------------------------
 MAX_SINGLE_CHUNK_SEC = 30      # predictor single-clip max
 DEFAULT_CHUNK_SEC = 25         # chunk size to use
@@ -336,108 +296,29 @@ def split_wav_to_chunks(wav_path: str, chunk_length: float = DEFAULT_CHUNK_SEC, 
         start += step
     return chunk_paths
 
-def post_audio_try_formats(chunk_path: str, url: str, token: Optional[str], model: str, timeout=120, retries=2):
-    headers_base = {}
-    if token:
-        headers_base["Authorization"] = f"Bearer {token}"
-
-    for attempt in range(retries + 1):
-        try:
-            with open(chunk_path, "rb") as fh:
-                files = {"file": (os.path.basename(chunk_path), fh, "audio/wav")}
-                data = {}
-                if model:
-                    data["model"] = model
-                resp = requests.post(url, headers=headers_base, files=files, data=data, timeout=timeout, verify=False)
-            return resp
-        except (SSLError, ConnectionError, Timeout) as e:
-            if attempt < retries:
-                time.sleep(0.8 * (attempt + 1))
-                continue
-            raise
-        except RequestException:
-            raise
-
-    raise RuntimeError("multipart POST attempts exhausted")
-
 def transcribe_chunk_file(chunk_path: str, url: str, token: Optional[str], model: str):
-    try:
-        resp = post_audio_try_formats(chunk_path, url, token, model, timeout=120, retries=2)
-    except Exception as e:
-        raise RuntimeError(f"Multipart POST failed: {e}")
-
-    if resp is None:
-        raise RuntimeError("No response from server (None)")
-
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    files = {"file": (os.path.basename(chunk_path), open(chunk_path, "rb"), "audio/wav")}
+    data = {}
+    if model:
+        data["model"] = model
+    resp = requests.post(url, headers=headers, files=files, data=data, timeout=120, verify=False)
     if resp.ok:
         try:
             j = resp.json()
+            text = j.get("transcription") or j.get("text") or j.get("result") or j.get("summary") or ""
+            if not text and isinstance(j, dict):
+                for v in j.values():
+                    if isinstance(v, str) and len(v) > 0:
+                        text = v
+                        break
+            return text, j
         except Exception:
             return resp.text, {"raw": resp.text}
-        text = j.get("transcription") or j.get("text") or j.get("result") or j.get("summary") or ""
-        if not text and isinstance(j, dict):
-            for v in j.values():
-                if isinstance(v, str) and len(v) > 0:
-                    text = v
-                    break
-        return text, j
-
-    body_lower = (resp.text or "").lower()
-    json_mandate = (
-        resp.status_code in (400, 415)
-        and ("only 'application/json' is allowed" in body_lower or "field required" in body_lower or "'file' is required" in body_lower or "missing" in body_lower)
-    )
-
-    if json_mandate:
-        try:
-            with open(chunk_path, "rb") as fh:
-                b64 = base64.b64encode(fh.read()).decode()
-            json_payloads = [
-                {"file": b64, "model": model},
-                {"audio": b64, "model": model},
-                {"data": b64, "model": model},
-            ]
-            headers = {"Content-Type": "application/json"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            last_err = None
-            for payload in json_payloads:
-                try:
-                    r2 = requests.post(url, headers=headers, json=payload, timeout=120, verify=False)
-                except (SSLError, ConnectionError, Timeout) as e:
-                    last_err = e
-                    time.sleep(0.25)
-                    continue
-                except RequestException as e:
-                    last_err = e
-                    time.sleep(0.25)
-                    continue
-
-                if r2.ok:
-                    try:
-                        j2 = r2.json()
-                    except Exception:
-                        return r2.text, {"raw": r2.text}
-                    text = j2.get("transcription") or j2.get("text") or j2.get("result") or j2.get("summary") or ""
-                    if not text and isinstance(j2, dict):
-                        for v in j2.values():
-                            if isinstance(v, str) and len(v) > 0:
-                                text = v
-                                break
-                    return text, j2
-                else:
-                    last_err = r2
-                    time.sleep(0.25)
-                    continue
-
-            if isinstance(last_err, Exception):
-                raise RuntimeError(f"JSON POSTs failed: {last_err}")
-            else:
-                raise RuntimeError(f"JSON POSTs returned non-OK: {getattr(last_err, 'status_code', str(last_err))} {getattr(last_err, 'text', '')[:400]}")
-        except Exception as e:
-            raise RuntimeError(f"Fallback JSON/base64 attempt failed: {e}")
-
-    raise RuntimeError(f"Chunk transcription failed: {resp.status_code} {resp.text[:400]}")
+    else:
+        raise RuntimeError(f"Chunk transcription failed: {resp.status_code} {resp.text[:400]}")
 
 def transcribe_long_audio(filepath: str, url: str, token: Optional[str], model: str,
                           chunk_sec: float = DEFAULT_CHUNK_SEC, overlap: float = DEFAULT_OVERLAP_SEC):
@@ -470,7 +351,7 @@ def transcribe_long_audio(filepath: str, url: str, token: Optional[str], model: 
     return final_transcript, results
 
 # -------------------------
-# Transcribe entrypoint (unified)
+# New transcribe_with_hf implementation
 # -------------------------
 def transcribe_with_hf(audio_filepath, language=None, diarization=False):
     if not audio_filepath:
@@ -491,7 +372,9 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
         except Exception as e:
             return e
 
+    # 1) Try WHISPER_API_URL
     if WHISPER_API_URL:
+        # generate candidate endpoints (in case user provided base URL)
         url = WHISPER_API_URL
         if url.endswith("/") or "/v1/" not in url:
             candidates = [url.rstrip("/") + p for p in ["/v1/audio/transcriptions", "/v1/audio/transcribe", "/v1/audio/transcribe/"]]
@@ -501,6 +384,7 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
         last_err = None
         for candidate in candidates:
             try:
+                # normalize to .norm.wav to get duration
                 try:
                     tmp_norm = audio_filepath + ".norm.wav"
                     ffmpeg_convert_to_wav(audio_filepath, tmp_norm, sample_rate=16000)
@@ -533,6 +417,7 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
                         path = _save_transcript_to_temp(text)
                         return text, j if isinstance(j, dict) else None, f"Transcribed via {candidate}", path
                     else:
+                        # If predictor complains about clip duration, fallback to chunking
                         try:
                             body = resp.text or ""
                             if "Maximum clip duration" in body or resp.status_code == 400:
@@ -550,6 +435,7 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
 
         return None, None, f"WHISPER_API_URL failed: {last_err}", None
 
+    # 2) Try LOCAL_WHISPER_URL
     if LOCAL_WHISPER_URL:
         try:
             dur = get_duration_seconds(audio_filepath)
@@ -575,6 +461,7 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
         except Exception as e:
             return None, None, f"LOCAL_WHISPER_URL exception: {e}", None
 
+    # 3) Fallback to HF inference API
     if HF_API_TOKEN:
         hf_url = f"https://api-inference.huggingface.co/models/{HF_WHISPER_MODEL}"
         headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
@@ -617,7 +504,7 @@ def _save_transcript_to_temp(text):
     return path
 
 # -------------------------
-# Summarization (unchanged)
+# Summarization (Summarizer API or OpenAI Responses fallback)
 # -------------------------
 def summarize_with_openai(transcript_text, prompt_instruction, style="concise", length="short"):
     if not transcript_text:
@@ -629,16 +516,19 @@ def summarize_with_openai(transcript_text, prompt_instruction, style="concise", 
     )
     user_prompt = f"{prompt_instruction or ''}\n\nTranscript:\n{transcript_text}\n\nPlease produce a {style} summary, {length} length."
 
+    # 1) Try SUMMARIZER_API_URL (OpenAI-compatible chat completions)
     if SUMMARIZER_API_URL:
         headers = {"Content-Type": "application/json"}
         if SUMMARIZER_API_TOKEN:
             headers["Authorization"] = f"Bearer {SUMMARIZER_API_TOKEN}"
+
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
         }
+
         try:
             resp = requests.post(SUMMARIZER_API_URL, headers=headers, json=payload, timeout=120, verify=False)
             if resp.ok:
@@ -651,10 +541,13 @@ def summarize_with_openai(transcript_text, prompt_instruction, style="concise", 
                             summary = choice["message"]["content"]
                         elif "text" in choice:
                             summary = choice["text"]
+
                     if not summary:
                         summary = j.get("summary") or j.get("result") or j.get("text") or resp.text
+
                 except Exception:
                     summary = resp.text
+
                 ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
                 path = os.path.join(tempfile.gettempdir(), f"summary_{ts}.txt")
                 with open(path, "w", encoding="utf-8") as out:
@@ -665,6 +558,7 @@ def summarize_with_openai(transcript_text, prompt_instruction, style="concise", 
         except Exception as e:
             return None, f"Error calling summarizer endpoint: {e}", None
 
+    # 2) Fallback to OpenAI API
     if not OPENAI_API_KEY:
         return None, "No summarizer configured (SUMMARIZER_API_URL) and OPENAI_API_KEY not set.", None
 
@@ -696,35 +590,6 @@ def summarize_with_openai(transcript_text, prompt_instruction, style="concise", 
         return None, f"OpenAI request failed: {e}", None
 
 # -------------------------
-# Small helper to set component values safely
-# -------------------------
-def _set_component_value_if_nonempty(comp, val):
-    if not val:
-        return
-    try:
-        if hasattr(comp, "update"):
-            try:
-                comp.update(value=val)
-                return
-            except Exception:
-                pass
-        if hasattr(comp, "value"):
-            try:
-                comp.value = val
-                return
-            except Exception:
-                pass
-        for attr in ("default", "text", "placeholder"):
-            if hasattr(comp, attr):
-                try:
-                    setattr(comp, attr, val)
-                    return
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"[model-settings] error setting component value: {e}")
-
-# -------------------------
 # UI: create_app
 # -------------------------
 def _get_gradio_theme():
@@ -738,25 +603,17 @@ def _get_gradio_theme():
         pass
     return None
 
-def _mask(val):
-    if not val:
-        return ""
-    if len(val) <= 12:
-        return val[:4] + "...(redacted)"
-    return val[:6] + "...(redacted)"
-
 def create_app():
-    # ensure file settings reloaded before building UI
-    load_model_settings()
+    load_model_settings()  # refresh before building UI
 
     theme = _get_gradio_theme()
     if theme is not None:
-        blocks_ctx = gr.Blocks(title="Transcriber + Summarizer", theme=theme)
+        blocks_ctx = gr.Blocks(title="Meeting Capture — Whisper + Summarizer", theme=theme)
     else:
-        blocks_ctx = gr.Blocks(title="Transcriber + Summarizer")
+        blocks_ctx = gr.Blocks(title="Meeting Capture — Whisper + Summarizer")
 
     with blocks_ctx as app:
-        gr.Markdown("# Transcribe & Summarize\nUpload or record audio, edit transcript, and generate a tunable summary.")
+        gr.Markdown("# Meeting Capture — Transcribe & Summarize\nUpload or record audio, edit transcript, and generate a tunable summary.")
 
         with gr.Tabs():
             with gr.Tab("About"):
@@ -765,34 +622,18 @@ def create_app():
                     ## About
                     Use this app to record meetings, transcribe them, and generate tunable summaries.
                     Configure your transcription and summarizer endpoints under **Model Config**.
-                    
+
                     ### Endpoint Format
-                    - **Transcription**: Expects multipart form-data with audio file or JSON/base64 depending on predictor
+                    - **Transcription**: Expects multipart form-data with audio file
                     - **Summarizer**: OpenAI-compatible `/v1/chat/completions` format
                     """
                 )
 
             with gr.Tab("Model Config"):
-                gr.Markdown("### Transcription model ")
-
-                whisper_url_input = make_component(
-                    gr.Textbox,
-                    label="Transcription endpoint URL",
-                    placeholder="https://your-whisper-endpoint/v1/audio/transcriptions",
-                    **({"value": WHISPER_API_URL} if WHISPER_API_URL else {})
-                )
-                whisper_token_input = make_component(
-                    gr.Textbox,
-                    label="Transcription token",
-                    placeholder="eyXXX",
-                    **({"value": WHISPER_API_TOKEN} if WHISPER_API_TOKEN else {})
-                )
-                whisper_model_input = make_component(
-                    gr.Textbox,
-                    label="Model name",
-                    placeholder="whisper-large-v3",
-                    **({"value": WHISPER_MODEL_NAME} if WHISPER_MODEL_NAME else {})
-                )
+                gr.Markdown("### Transcription model (Whisper)")
+                whisper_url_input = make_component(gr.Textbox, label="Transcription endpoint URL", placeholder="https://your-whisper-endpoint/v1/audio/transcriptions", value=WHISPER_API_URL)
+                whisper_token_input = make_component(gr.Textbox, label="Transcription token (optional)", placeholder="Bearer token", type="password", value=WHISPER_API_TOKEN)
+                whisper_model_input = make_component(gr.Textbox, label="Model name (optional)", placeholder="whisper-large-v3", value=WHISPER_MODEL_NAME)
 
                 save_whisper_btn = make_component(gr.Button, label="Save Transcription Settings")
                 whisper_save_status = make_component(gr.Textbox, label="Save status", interactive=False)
@@ -802,24 +643,10 @@ def create_app():
                 save_whisper_btn.click(fn=save_whisper_settings, inputs=[whisper_url_input, whisper_token_input, whisper_model_input], outputs=[whisper_save_status])
                 test_whisper_btn.click(fn=test_whisper_current, inputs=[whisper_url_input, whisper_token_input], outputs=[whisper_test_status])
 
-                gr.Markdown("### Summarizer model")
-                summarizer_url_input = make_component(
-                    gr.Textbox,
-                    label="Summarizer endpoint URL",
-                    placeholder="https://your-endpoint/v1/chat/completions",
-                    **({"value": SUMMARIZER_API_URL} if SUMMARIZER_API_URL else {})
-                )
-                summarizer_token_input = make_component(
-                    gr.Textbox,
-                    label="Summarizer token",
-                    **({"value": SUMMARIZER_API_TOKEN} if SUMMARIZER_API_TOKEN else {})
-                )
-                summarizer_model_input = make_component(
-                    gr.Textbox,
-                    label="Summarizer model name",
-                    placeholder="openai/gpt-oss-120b",
-                    **({"value": SUMMARIZER_MODEL_NAME} if SUMMARIZER_MODEL_NAME else {})
-                )
+                gr.Markdown("### Summarizer model (OpenAI-compatible)")
+                summarizer_url_input = make_component(gr.Textbox, label="Summarizer endpoint URL", placeholder="https://your-endpoint/v1/chat/completions", value=SUMMARIZER_API_URL)
+                summarizer_token_input = make_component(gr.Textbox, label="Summarizer token (optional)", type="password", value=SUMMARIZER_API_TOKEN)
+                summarizer_model_input = make_component(gr.Textbox, label="Summarizer model name (optional)", placeholder="(auto-detected)", value=SUMMARIZER_MODEL_NAME)
 
                 save_summarizer_btn = make_component(gr.Button, label="Save Summarizer Settings")
                 summarizer_save_status = make_component(gr.Textbox, label="Save status", interactive=False)
@@ -832,22 +659,6 @@ def create_app():
                 clear_btn = make_component(gr.Button, label="Clear All Model Settings")
                 clear_status = make_component(gr.Textbox, label="Clear status", interactive=False)
                 clear_btn.click(fn=clear_model_settings, inputs=[], outputs=[clear_status])
-
-                # extra debug control: show currently loaded values (masked)
-                def show_loaded():
-                    return (
-                        f"WHISPER_API_URL = {WHISPER_API_URL}\n"
-                        f"WHISPER_API_TOKEN = {_mask(WHISPER_API_TOKEN)}\n"
-                        f"WHISPER_MODEL_NAME = {WHISPER_MODEL_NAME}\n\n"
-                        f"SUMMARIZER_API_URL = {SUMMARIZER_API_URL}\n"
-                        f"SUMMARIZER_API_TOKEN = {_mask(SUMMARIZER_API_TOKEN)}\n"
-                        f"SUMMARIZER_MODEL_NAME = {SUMMARIZER_MODEL_NAME}\n\n"
-                        f"MODEL_CONFIG_PATH = {MODEL_CONFIG_PATH}\n"
-                    )
-
-                show_btn = make_component(gr.Button, label="Show loaded settings")
-                show_out = make_component(gr.Textbox, label="Loaded config (masked)", interactive=False)
-                show_btn.click(fn=show_loaded, inputs=[], outputs=[show_out])
 
             with gr.Tab("Transcribe & Summarize"):
                 with gr.Row():
