@@ -12,15 +12,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 from requests.exceptions import RequestException, SSLError, ConnectionError, Timeout
 
-# -------------------------
-# Config (env) - defaults can be empty; UI will let you set them at runtime
-# -------------------------
-HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-LOCAL_WHISPER_URL = os.getenv("LOCAL_WHISPER_URL", "")
-HF_WHISPER_MODEL = os.getenv("HF_WHISPER_MODEL", "openai/whisper-large-v3")
-OPENAI_SUMMARY_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "openai/gpt-oss-120b")
-
 # Path to store model config (persisted JSON)
 _raw_model_config_path = os.getenv("MODEL_CONFIG_PATH", "/app/model_settings.json")
 MODEL_CONFIG_PATH = os.path.abspath(_raw_model_config_path)
@@ -550,65 +541,6 @@ def transcribe_with_hf(audio_filepath, language=None, diarization=False):
 
         return None, None, f"WHISPER_API_URL failed: {last_err}", None
 
-    if LOCAL_WHISPER_URL:
-        try:
-            dur = get_duration_seconds(audio_filepath)
-            if dur > MAX_SINGLE_CHUNK_SEC:
-                stitched, parts = transcribe_long_audio(audio_filepath, LOCAL_WHISPER_URL, None, WHISPER_MODEL_NAME or "whisper-large-v3",
-                                                       chunk_sec=DEFAULT_CHUNK_SEC, overlap=DEFAULT_OVERLAP_SEC)
-                path = _save_transcript_to_temp(stitched)
-                return stitched, {"parts": parts}, f"Transcribed by chunking into {len(parts)} parts via LOCAL_WHISPER_URL", path
-            else:
-                resp = post_single_file(LOCAL_WHISPER_URL, None, audio_filepath)
-                if isinstance(resp, Exception):
-                    return None, None, f"LOCAL_WHISPER_URL error: {resp}", None
-                if resp.ok:
-                    try:
-                        j = resp.json()
-                        text = j.get("transcription") or j.get("text") or resp.text
-                    except Exception:
-                        text = resp.text
-                    path = _save_transcript_to_temp(text)
-                    return text, j if isinstance(j, dict) else None, "Transcribed via LOCAL_WHISPER_URL", path
-                else:
-                    return None, None, f"LOCAL_WHISPER_URL error: {resp.status_code} {resp.text[:400]}", None
-        except Exception as e:
-            return None, None, f"LOCAL_WHISPER_URL exception: {e}", None
-
-    if HF_API_TOKEN:
-        hf_url = f"https://api-inference.huggingface.co/models/{HF_WHISPER_MODEL}"
-        headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-        try:
-            with open(audio_filepath, "rb") as af:
-                audio_bytes = af.read()
-            resp = requests.post(hf_url, headers=headers, data=audio_bytes, timeout=120, verify=False)
-            if resp.ok:
-                try:
-                    j = resp.json()
-                    text = j.get("transcription") or j.get("text") or j.get("translation") or j.get("result") or resp.text
-                except Exception:
-                    text = resp.text
-                path = _save_transcript_to_temp(text)
-                return text, j if isinstance(j, dict) else None, "Transcribed via Hugging Face inference", path
-            else:
-                with open(audio_filepath, "rb") as f:
-                    files = {"file": (os.path.basename(audio_filepath), f, "application/octet-stream")}
-                    resp2 = requests.post(hf_url, headers=headers, files=files, timeout=120, verify=False)
-                if resp2.ok:
-                    try:
-                        j = resp2.json()
-                        text = j.get("transcription") or j.get("text") or ""
-                    except Exception:
-                        text = resp2.text
-                    path = _save_transcript_to_temp(text)
-                    return text, j if isinstance(j, dict) else None, "Transcribed via Hugging Face (multipart)", path
-                else:
-                    return None, None, f"Hugging Face transcribe failed: {resp.status_code} {resp.text}", None
-        except Exception as e:
-            return None, None, f"HF transcribe error: {e}", None
-
-    return None, None, "No transcription endpoint configured (WHISPER_API_URL, LOCAL_WHISPER_URL, or HF_API_TOKEN)", None
-
 def _save_transcript_to_temp(text):
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     path = os.path.join(tempfile.gettempdir(), f"transcript_{ts}.txt")
@@ -617,7 +549,7 @@ def _save_transcript_to_temp(text):
     return path
 
 # -------------------------
-# Summarization (unchanged)
+# Summarization 
 # -------------------------
 def summarize_with_openai(transcript_text, prompt_instruction, style="concise", length="short"):
     if not transcript_text:
@@ -664,21 +596,6 @@ def summarize_with_openai(transcript_text, prompt_instruction, style="concise", 
                 return None, f"Summarizer API error: {resp.status_code} {resp.text[:500]}", None
         except Exception as e:
             return None, f"Error calling summarizer endpoint: {e}", None
-
-    if not OPENAI_API_KEY:
-        return None, "No summarizer configured (SUMMARIZER_API_URL) and OPENAI_API_KEY not set.", None
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": OPENAI_SUMMARY_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.0,
-        "max_tokens": 1024
-    }
 
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -860,7 +777,7 @@ def create_app():
                             label="Meeting audio/video (drop .wav/.mp3/.mp4/.mov/.mkv/.webm etc.)",
                             **({"type": "filepath"} if True else {})
                         )
-                        language_hint = make_component(gr.Textbox, label="Language hint (optional)", placeholder="e.g. en")
+                        language_hint = make_component(gr.Textbox, label="Language hint", placeholder="e.g. en")
                         diarization = make_component(gr.Checkbox, label="Enable speaker diarization (if supported)", value=False)
                         transcribe_btn = make_component(gr.Button, label="Transcribe")
                         transcribe_status = make_component(gr.Textbox, label="Transcription Status", interactive=False)
