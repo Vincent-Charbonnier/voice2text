@@ -85,29 +85,75 @@ def encode_file_b64(path):
 # -------------------------
 # Model config helpers (UI actions)
 # -------------------------
-def test_whisper_connection(api_url: str, api_token: str) -> str:
-    """Test connectivity to transcription endpoint via /health or base GET."""
+import requests
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def test_whisper_connection(api_url: str, api_token: str, timeout: float = 1.5) -> str:
+    """
+    Ultra-fast connectivity test for Whisper-compatible service.
+    Timeout is low (1.5s default) so total test time stays < 3 seconds.
+    """
     if not api_url:
-        return "Please provide a transcription (Whisper) endpoint URL."
-    headers = {}
+        return "❌ Please provide an API URL."
+
+    # Normalize to base URL
+    base = api_url.rstrip("/")
+    if "/v1/" in base:
+        base = base.split("/v1/")[0]
+
+    headers = {"User-Agent": "whisper-connection-test/fast"}
     if api_token:
         headers["Authorization"] = f"Bearer {api_token}"
-    
-    # Try /health endpoint first
-    base_url = api_url.rstrip('/').rsplit('/', 1)[0] if '/v1/' in api_url else api_url.rstrip('/')
-    health_url = f"{base_url}/health"
-    
-    try:
-        resp = requests.get(health_url, headers=headers, timeout=10, verify=False)
-        if resp.status_code == 200:
-            return f"✅ Whisper service reachable via /health. Transcription requires multipart/form-data POST."
-        # Try base URL
-        resp2 = requests.get(base_url, headers=headers, timeout=10, verify=False)
-        if resp2.status_code == 200:
-            return f"✅ Whisper service reachable (base URL). Transcription requires multipart/form-data POST."
-        return f"❌ Health check failed: {resp.status_code}"
-    except Exception as e:
-        return f"❌ Connection failed: {e}"
+
+    # --- Very fast GET helper ---
+    def try_get(path: str):
+        url = f"{base}{path}"
+        try:
+            r = requests.get(
+                url,
+                headers=headers,
+                timeout=(timeout, timeout),  # (connect timeout, read timeout)
+                verify=False,
+            )
+            return r.status_code, url
+        except Exception:
+            return None, url
+
+    # 1) Fastest endpoint (cheap, simple): /health
+    code, url = try_get("/health")
+    if code == 200:
+        return f"✅ Fast connection OK via {url}"
+
+    if code in (401, 403):
+        return f"❌ Unauthorized ({code}) — invalid token at {url}"
+
+    # 2) Next fastest: /v1/models (lightweight JSON)
+    code, url = try_get("/v1/models")
+    if code == 200:
+        return f"✅ Connected (authorized) via {url}"
+
+    if code in (401, 403):
+        return f"❌ Unauthorized ({code}) — invalid token at {url}"
+
+    # 3) Quick fallback: /version (small, usually cached)
+    code, url = try_get("/version")
+    if code == 200:
+        return f"⚠️ Connected via {url} — service reachable, health/models unavailable."
+
+    # 4) Check if transcription endpoint *exists* (0.3–0.6s)
+    code, url = try_get("/v1/audio/transcriptions")
+    if code == 405:  # Method Not Allowed (endpoint exists)
+        return f"✅ Transcription endpoint detected at {url} (POST only)."
+    if code == 404:
+        return f"❌ Transcription endpoint not found at {url}"
+
+    # Final fallback — unreachable
+    if code is None:
+        return "❌ Unable to reach service (timeout)."
+
+    return f"❌ No valid response (HTTP {code}) from {url}"
 
 def test_summarizer_connection(
     api_url: str,
