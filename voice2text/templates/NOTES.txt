@@ -1,0 +1,17 @@
+Thank you for installing the voice2text chart!
+
+To create Kubernetes secrets for HF & OpenAI tokens, run (example):
+  kubectl create secret generic hf-secret --from-literal=hf_api_token='<YOUR_HF_TOKEN>' -n <namespace>
+  kubectl create secret generic openai-secret --from-literal=openai_api_key='<YOUR_OPENAI_KEY>' -n <namespace>
+
+Install the chart:
+  helm install voice2text ./voice2text
+
+To upgrade with new values:
+  helm upgrade --install voice2text ./voice2text -f my-values.yaml
+
+If using Istio, ensure your gateway in values (ezua.virtualService.istioGateway) is correct.
+
+By default the service listens on port 7860 (Gradio). Use port-forward for local testing:
+  kubectl port-forward svc/$(kubectl get svc -l app.kubernetes.io/name=voice2text -o jsonpath='{.items[0].metadata.name}') 7860:7860
+
