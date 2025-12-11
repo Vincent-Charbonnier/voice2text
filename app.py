@@ -852,12 +852,14 @@ def create_app():
             with gr.Tab("Transcribe & Summarize"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("### Provide audio (upload or record)")
-                        audio_in = make_component(gr.Audio,
-                                                 source="microphone",
-                                                 type="filepath",
-                                                 label="Meeting audio",
-                                                 show_label=False)
+                        gr.Markdown("### Provide audio or video (upload or record)")
+                        # Accept audio OR video files; return a local filepath for ffmpeg to read.
+                        # gr.File returns a dict in older versions; using type='filepath' returns a string path.
+                        audio_in = make_component(
+                            gr.File,
+                            label="Meeting audio/video (drop .wav/.mp3/.mp4/.mov/.mkv/.webm etc.)",
+                            **({"type": "filepath"} if True else {})
+                        )
                         language_hint = make_component(gr.Textbox, label="Language hint (optional)", placeholder="e.g. en")
                         diarization = make_component(gr.Checkbox, label="Enable speaker diarization (if supported)", value=False)
                         transcribe_btn = make_component(gr.Button, label="Transcribe")
@@ -875,14 +877,28 @@ def create_app():
                         summary_status = make_component(gr.Textbox, label="Summary Status", interactive=False)
                         download_summary = make_component(gr.File, label="Download Summary", visible=False)
 
-                def _transcribe(audio_fp, lang, diar):
-                    txt, raw, status, file_path = transcribe_with_hf(audio_fp, language=lang, diarization=diar)
-                    return txt or "", status, file_path or None
+                def _transcribe(file_path, lang, diar):
+                    """
+                    file_path: path to uploaded file (audio or video) as returned by gr.File with type='filepath'
+                    We pass the file path directly into transcribe_with_hf which will call ffmpeg_convert_to_wav internally.
+                    """
+                    if not file_path:
+                        return "", "No file provided", None
+
+                    # If the Gradio returns a dict for File in your version, pull out the filepath:
+                    if isinstance(file_path, dict):
+                        # new gradio sometimes returns {'name': 'xxx.mp4', 'tmp_path': '/tmp/xxx.mp4'}
+                        # try common keys:
+                        file_path = file_path.get("tmp_path") or file_path.get("name") or list(file_path.values())[0]
+
+                    txt, raw, status, file_path_out = transcribe_with_hf(file_path, language=lang, diarization=diar)
+                    return txt or "", status, file_path_out or None
 
                 def _generate_summary(trans_text, prompt, style, length):
                     summary, status, path = summarize_with_openai(trans_text, prompt, style, length)
                     return summary or "", status, path or None
 
+                # Wire the buttons to the new file-based input
                 transcribe_btn.click(fn=_transcribe, inputs=[audio_in, language_hint, diarization], outputs=[transcript_box, transcribe_status, download_trans])
                 summarize_btn.click(fn=_generate_summary, inputs=[transcript_box, prompt_box, style_dropdown, length_dropdown], outputs=[summary_box, summary_status, download_summary])
 
