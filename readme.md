@@ -21,34 +21,7 @@ The application provides:
 
 ## Architecture
 
-```[ Insert Architecture Here]```
-
-```
-+-----------------------+
-| User (Web Browser) |
-+----------+------------+
-|
-v
-+-------------------------------+
-| Voice2Text UI (Gradio-based) |
-| - File upload / recording |
-| - Config management |
-| - Transcript editing |
-| - Summary generation |
-+----------+--------------------+
-|
-v
-+-------------------------------+
-| Whisper API (local endpoint) |
-| Transcription backend |
-+-------------------------------+
-|
-v
-+-----------------------------------------------+
-| GPT-OSS / OpenAI-compatible summarizer API |
-| Summary generation backend |
-+-----------------------------------------------+
-```
+![Architecture Design](architecture-design.png)
 
 ---
 
