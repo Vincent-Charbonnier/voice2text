@@ -19,21 +19,6 @@ tolerations: []
 
 affinity: {}
 
-envSecrets:
-  # Example how to provide secrets (recommended):
-  # - name: HF_API_TOKEN
-  #   secretName: hf-secret
-  #   secretKey: hf_api_token
-  # - name: OPENAI_API_KEY
-  #   secretName: openai-secret
-  #   secretKey: openai_api_key
-  - name: HF_API_TOKEN
-    secretName: hf-secret
-    secretKey: hf_api_token
-  - name: OPENAI_API_KEY
-    secretName: openai-secret
-    secretKey: openai_api_key
-
 readinessProbe:
   path: "/"
   initialDelaySeconds: 5

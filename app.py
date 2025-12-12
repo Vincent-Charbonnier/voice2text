@@ -1,7 +1,5 @@
-# meeting_summarizer_whisper_openai.py
+# app.py
 import os
-import tempfile
-import base64
 import json
 import requests
 import gradio as gr
@@ -65,21 +63,6 @@ def make_component(component_cls, **kwargs):
         return component_cls(**filtered)
     except Exception:
         return component_cls(**kwargs)
-
-# -------------------------
-# Helpers
-# -------------------------
-def save_bytes_to_tempfile(bytes_data, suffix=".wav"):
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(bytes_data)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
-
-def encode_file_b64(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
 
 # -------------------------
 # Persistency: load/save JSON settings
@@ -189,30 +172,8 @@ def test_whisper_connection(api_url: str, api_token: str, timeout: float = 1.5) 
 
     code, url = try_get("/health")
     if code == 200:
-        return f"✅ Fast connection OK via {url}"
-    if code in (401, 403):
-        return f"❌ Unauthorized ({code}) — invalid token at {url}"
-
-    code, url = try_get("/v1/models")
-    if code == 200:
-        return f"✅ Connected (authorized) via {url}"
-    if code in (401, 403):
-        return f"❌ Unauthorized ({code}) — invalid token at {url}"
-
-    code, url = try_get("/version")
-    if code == 200:
-        return f"⚠️ Connected via {url} — service reachable, health/models unavailable."
-
-    code, url = try_get("/v1/audio/transcriptions")
-    if code == 405:
-        return f"✅ Transcription endpoint detected at {url} (POST only)."
-    if code == 404:
-        return f"❌ Transcription endpoint not found at {url}"
-
-    if code is None:
-        return "❌ Unable to reach service (timeout)."
-
-    return f"❌ No valid response (HTTP {code}) from {url}"
+        return f"✅ Transcription endpoint reachable."
+    return f"❌ Received status {resp.status_code}: {resp.text[:500]}"
 
 def test_summarizer_connection(api_url: str, api_token: str, payload: dict | None = None) -> str:
     if not api_url:
@@ -231,7 +192,7 @@ def test_summarizer_connection(api_url: str, api_token: str, payload: dict | Non
     try:
         resp = requests.post(api_url, headers=headers, json=payload, timeout=10, verify=False)
         if resp.status_code == 200:
-            return "✅ Summarizer endpoint reachable (OpenAI-compatible)."
+            return "✅ Summarizer endpoint reachable."
         return f"❌ Received status {resp.status_code}: {resp.text[:500]}"
     except Exception as e:
         return f"❌ Connection failed: {e}"
@@ -266,17 +227,27 @@ def test_summarizer_current(sum_url, sum_token):
     return test_summarizer_connection(sum_url, sum_token)
 
 def clear_model_settings():
+    # Clear in memory + file
     update_model_settings("", "", "", "", "", "")
     save_model_settings()
-    return f"✅ Cleared saved model settings ({MODEL_CONFIG_PATH})."
+
+    # Return empty values for all fields + status message
+    return (
+        gr.update(value=None),  # whisper_url_input
+        gr.update(value=None),  # whisper_token_input
+        gr.update(value=None),  # whisper_model_input
+        gr.update(value=None),  # summarizer_url_input
+        gr.update(value=None),  # summarizer_token_input
+        gr.update(value=None),  # summarizer_model_input
+        f"✅ Cleared saved model settings ({MODEL_CONFIG_PATH})."
+    )
 
 # -------------------------
 # Transcription helpers + chunked transcription
-# (unchanged from your version)
 # -------------------------
-MAX_SINGLE_CHUNK_SEC = 30      # predictor single-clip max
-DEFAULT_CHUNK_SEC = 25         # chunk size to use
-DEFAULT_OVERLAP_SEC = 1.0      # overlap to avoid chopped words
+MAX_SINGLE_CHUNK_SEC = 30       # predictor single-clip max
+DEFAULT_CHUNK_SEC = 25          # chunk size to use
+DEFAULT_OVERLAP_SEC = 1.0       # overlap to avoid chopped words
 CHUNKS_DIR = "/tmp/tts_chunks"  # where chunks are written
 
 def ffmpeg_convert_to_wav(input_path: str, out_path: str, sample_rate: int = 16000):
@@ -461,7 +432,7 @@ def transcribe_long_audio(filepath: str, url: str, token: Optional[str], model: 
     return final_transcript, results
 
 # -------------------------
-# Transcribe entrypoint (unified)
+# Transcribe entrypoint
 # -------------------------
 def transcribe_with_hf(audio_filepath, language=None, diarization=False):
     if not audio_filepath:
@@ -748,7 +719,19 @@ def create_app():
 
                 clear_btn = make_component(gr.Button, label="Clear All Model Settings")
                 clear_status = make_component(gr.Textbox, label="Clear status", interactive=False)
-                clear_btn.click(fn=clear_model_settings, inputs=[], outputs=[clear_status])
+                clear_btn.click(
+                    fn=clear_model_settings,
+                    inputs=[],
+                    outputs=[
+                        whisper_url_input,
+                        whisper_token_input,
+                        whisper_model_input,
+                        summarizer_url_input,
+                        summarizer_token_input,
+                        summarizer_model_input,
+                        clear_status
+                    ]
+                )
 
                 # extra debug control: show currently loaded values (masked)
                 def show_loaded():
