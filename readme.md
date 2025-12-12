@@ -175,4 +175,4 @@ This project uses:
 - GPT-OSS/OpenAI-compatible APIs for summarization
 
 And Specials thanks to:
-- Dave & Jaro and all the HPE Private Cloud AI Central Europe SE Team
+- Dave (for the UI) & Dominic (for the troubleshooting) and all the HPE Private Cloud AI Central Europe SE Team (for being awesome).
