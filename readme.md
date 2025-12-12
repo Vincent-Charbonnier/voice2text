@@ -122,7 +122,8 @@ The "Clear All Model Settings" button performs the following:
 ## UI Overview
 
 A screenshot should be placed here once available:
-```[ Insert UI Screenshot Here]```
+
+![Voice2Text UI](UI.png)
 
 ---
 
