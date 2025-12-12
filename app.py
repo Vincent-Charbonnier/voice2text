@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 from requests.exceptions import RequestException, SSLError, ConnectionError, Timeout
+import tempfile
 
 # Path to store model config (persisted JSON)
 _raw_model_config_path = os.getenv("MODEL_CONFIG_PATH", "/app/model_settings.json")
@@ -760,11 +761,13 @@ def create_app():
                             label="Meeting audio/video (drop .wav/.mp3/.mp4/.mov/.mkv/.webm etc.)",
                             **({"type": "filepath"} if True else {})
                         )
-                        language_hint = make_component(gr.Textbox, label="Language hint", placeholder="e.g. en")
+
+                        language_hint = make_component(gr.Textbox, label="Language hint (optional)", placeholder="e.g. en")
                         diarization = make_component(gr.Checkbox, label="Enable speaker diarization (if supported)", value=False)
                         transcribe_btn = make_component(gr.Button, label="Transcribe")
                         transcribe_status = make_component(gr.Textbox, label="Transcription Status", interactive=False)
                         download_trans = make_component(gr.File, label="Download Transcript", visible=False)
+
                     with gr.Column(scale=1):
                         gr.Markdown("### Transcript (editable)")
                         transcript_box = make_component(gr.Textbox, label="Transcript", lines=12)
