@@ -173,4 +173,6 @@ This project uses:
 - ffmpeg for media processing
 - Whisper-compatible APIs for transcription
 - GPT-OSS/OpenAI-compatible APIs for summarization
+
+And Specials thanks to:
 - Dave & Jaro and all the HPE Private Cloud AI Central Europe SE Team
