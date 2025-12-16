@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # Frontend (React app served by nginx)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+        VITE_KEYCLOAK_URL: http://localhost:8080
+        VITE_KEYCLOAK_REALM: voicescribe
+        VITE_KEYCLOAK_CLIENT_ID: voicescribe-app
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+      - keycloak
+    networks:
+      - voicescribe-network
+
+  # Backend (FastAPI with Whisper)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=voicescribe
+      - KEYCLOAK_CLIENT_ID=voicescribe-app
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - WHISPER_MODEL=base  # Options: tiny, base, small, medium, large
+      - CORS_ORIGINS=http://localhost:3000
+      - ALLOW_ANONYMOUS=false  # Set to true for development without auth
+    volumes:
+      - whisper-cache:/root/.cache/whisper
+    depends_on:
+      - keycloak
+    networks:
+      - voicescribe-network
+
+  # Keycloak (Authentication)
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    command: start-dev
+    ports:
+      - "8080:8080"
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
+      - KC_DB_USERNAME=keycloak
+      - KC_DB_PASSWORD=${KEYCLOAK_DB_PASSWORD:-keycloak}
+    depends_on:
+      - keycloak-db
+    networks:
+      - voicescribe-network
+
+  # Keycloak Database
+  keycloak-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=keycloak
+      - POSTGRES_PASSWORD=${KEYCLOAK_DB_PASSWORD:-keycloak}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    networks:
+      - voicescribe-network
+
+volumes:
+  whisper-cache:
+  keycloak-db-data:
+
+networks:
+  voicescribe-network:
+    driver: bridge

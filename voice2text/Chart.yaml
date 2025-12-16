@@ -1,6 +1,0 @@
-apiVersion: v2
-name: voice2text
-description: Helm chart for vinchar/voice2text Gradio Meeting Capture app
-type: application
-version: 0.1.2
-appVersion: "0.1.2"
